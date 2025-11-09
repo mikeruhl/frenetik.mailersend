@@ -1,0 +1,73 @@
+name: .NET CI/CD
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+
+    - name: Restore dependencies
+      run: dotnet restore
+
+    - name: Build
+      run: dotnet build --configuration Release --no-restore
+
+    - name: Test
+      run: dotnet test --configuration Release --no-build --verbosity normal
+
+  publish:
+    needs: build-and-test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+
+    - name: Extract version from tag
+      id: version
+      run: |
+        TAG=${GITHUB_REF#refs/tags/v}
+        echo "version=$TAG" >> $GITHUB_OUTPUT
+        if [[ "$TAG" == *"-"* ]]; then
+          echo "is_preview=true" >> $GITHUB_OUTPUT
+          SUFFIX=${TAG#*-}
+          echo "suffix=$SUFFIX" >> $GITHUB_OUTPUT
+        else
+          echo "is_preview=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Restore dependencies
+      run: dotnet restore
+
+    - name: Build
+      run: dotnet build --configuration Release --no-restore
+
+    - name: Pack (Stable)
+      if: steps.version.outputs.is_preview == 'false'
+      run: dotnet pack MailerSend/MailerSend.csproj --configuration Release --no-build --output ./artifacts -p:PackageVersion=${{ steps.version.outputs.version }}
+
+    - name: Pack (Preview)
+      if: steps.version.outputs.is_preview == 'true'
+      run: dotnet pack MailerSend/MailerSend.csproj --configuration Release --no-build --output ./artifacts -p:PackageVersion=${{ steps.version.outputs.version }} -p:VersionSuffix=${{ steps.version.outputs.suffix }}
+
+    - name: Publish to NuGet
+      run: dotnet nuget push ./artifacts/*.nupkg --api-key ${{secrets.NUGET_API_KEY}} --source https://api.nuget.org/v3/index.json --skip-duplicate
